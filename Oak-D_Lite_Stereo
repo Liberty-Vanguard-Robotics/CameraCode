@@ -1,0 +1,87 @@
+# Displays the Left and right Camera outputs
+# press q to end the program and t to switch between overlaid and side by side streams
+
+import cv2
+import depthai as dai
+import numpy as np
+
+# returns Frames in form openCV can display
+def getFrame(queue):
+    frame = queue.get()
+    return frame.getCvFrame()
+
+def getMonoCamera(pipeline, isleft):
+    # Configure Mono Camera
+    mono = pipeline.createMonoCamera()
+    
+    #Set Camera Resolution
+    mono.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
+
+    if isleft:
+        #CAM_B is the left camera
+        mono.setBoardSocket(dai.CameraBoardSocket.CAM_B)
+    else : 
+        #CAM_C is the right camera
+        mono.setBoardSocket(dai.CameraBoardSocket.CAM_C)
+    return mono
+
+def getStereoPair(pipeline, monoLeft, monoRight):
+    stereo = pipeline.createStereoDepth()
+    stereo.setLeftRightCheck(True)
+
+    monoLeft.out.link(stereo.left)
+    monoRight.out.link(stereo.right)
+
+    return stereo
+
+if __name__ == '__main__':
+
+    # Create pipeline
+    pipeline = dai.Pipeline()
+
+    # Set up left and right Cameras
+    monoLeft = getMonoCamera(pipeline, isleft= True)
+    monoRight = getMonoCamera(pipeline, isleft= False)
+
+    # Combine left and right cameras
+    stereo = getStereoPair(pipeline, monoLeft, monoRight)
+
+    # Set up XLink for Stereo Camera
+    xoutDisp = pipeline.createXLinkOut()
+    xoutDisp.setStreamName("disparity")
+
+    stereo.disparity.link(xoutDisp.input)
+
+    # Pipeline is defined
+
+    with dai.Device(pipeline) as device:
+
+        # Get output queues
+        disparityQueue = device.getOutputQueue(name = "disparity", maxSize = 1, blocking = False)
+
+        # Calculate the colormap
+        disparityMultiplier = 255 / stereo.getMaxDisparity()
+
+        while True:
+            # Get frames
+            disparity = getFrame(disparityQueue)
+            dis = disparityQueue.get()
+            disFrame = dis.getFrame()
+
+            # ColorMap for disparity view
+            disparity = (disparity * disparityMultiplier).astype(np.uint8)
+            disparity = cv2.applyColorMap(disparity, cv2.COLORMAP_JET)
+
+            height, width = disFrame.shape
+            centerX, centerY = width // 2, height // 2
+            distance = disFrame[centerX,centerY]
+
+            imOut = cv2.circle(disparity, (centerX, centerY), 5, (0, 0, 200), -1)
+            cv2.imshow("Disparity", disparity)
+
+            # Ends Stream when q is pressed
+            key = cv2.waitKey(1)
+            if key == ord('q'):
+                print(distance)
+                break
+
