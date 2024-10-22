@@ -1,5 +1,5 @@
 # Displays the Left and right Camera outputs
-# press q to end the program and t to switch between overlaid and side by side streams
+# press q to end the program
 
 import cv2
 import depthai as dai
@@ -26,8 +26,10 @@ def getMonoCamera(pipeline, isleft):
     return mono
 
 def getStereoPair(pipeline, monoLeft, monoRight):
-    stereo = pipeline.createStereoDepth()
+    stereo = pipeline.create(dai.node.StereoDepth)
+    stereo.initialConfig.setConfidenceThreshold(300)
     stereo.setLeftRightCheck(True)
+    stereo.setExtendedDisparity(True)
 
     monoLeft.out.link(stereo.left)
     monoRight.out.link(stereo.right)
@@ -50,17 +52,17 @@ if __name__ == '__main__':
     xoutDisp = pipeline.createXLinkOut()
     xoutDisp.setStreamName("disparity")
 
-    stereo.disparity.link(xoutDisp.input)
+    stereo.depth.link(xoutDisp.input)
 
     # Pipeline is defined
 
     with dai.Device(pipeline) as device:
 
         # Get output queues
-        disparityQueue = device.getOutputQueue(name = "disparity", maxSize = 1, blocking = False)
+        disparityQueue = device.getOutputQueue(name = "disparity", maxSize = 2, blocking = False)
 
         # Calculate the colormap
-        disparityMultiplier = 255 / stereo.getMaxDisparity()
+        disparityMultiplier = 255 / stereo.initialConfig.getMaxDisparity()
 
         while True:
             # Get frames
@@ -71,17 +73,17 @@ if __name__ == '__main__':
             # ColorMap for disparity view
             disparity = (disparity * disparityMultiplier).astype(np.uint8)
             disparity = cv2.applyColorMap(disparity, cv2.COLORMAP_JET)
-
             height, width = disFrame.shape
             centerX, centerY = width // 2, height // 2
             distance = disFrame[centerX,centerY]
 
-            imOut = cv2.circle(disparity, (centerX, centerY), 5, (0, 0, 200), -1)
+            imOut = cv2.circle(disparity, (centerX, centerY), 1, (0, 0, 200), -1)
+            imOut = cv2.putText(disparity, str(distance) , (centerX + 5, centerY), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (200, 200, 200,), 3)
             cv2.imshow("Disparity", disparity)
 
             # Ends Stream when q is pressed
             key = cv2.waitKey(1)
             if key == ord('q'):
-                print(distance)
                 break
 
