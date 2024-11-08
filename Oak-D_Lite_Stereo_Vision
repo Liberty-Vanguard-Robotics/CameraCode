@@ -1,8 +1,14 @@
 # press q to end the program
-# Currently the display is shifted to the left but the numbers line up with the camera
+# w a s d to move the distance region around
 import cv2
 import depthai as dai
 import numpy as np
+
+# how far the Region of interest(roi) moves 
+stepSize = 0.05
+
+# boolean for changes to the roi
+newConfig = False
 
 # returns Frames in form openCV can display
 def getFrame(queue):
@@ -27,7 +33,7 @@ def getMonoCamera(pipeline, isleft):
 def getStereoPair(pipeline, monoLeft, monoRight):
     # Sets up the Stereo Node
     stereo = pipeline.create(dai.node.StereoDepth)
-    stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
+    stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_ACCURACY)
     # Sets the confidence of the AI. 200 recomended 
     # Higher values makes it more acurate but gives less data(more blank spots)
     stereo.initialConfig.setConfidenceThreshold(250)
@@ -35,8 +41,6 @@ def getStereoPair(pipeline, monoLeft, monoRight):
     stereo.setLeftRightCheck(True)
     # Increases the range of the disparity search. makes it better at detecting close things
     stereo.setExtendedDisparity(True)
-    # Filter to help smoothout the data and fill in gaps
-    #stereo.setMedianFilter(dai.MedianFilter.KERNEL_7x7)
     # Does more depth steps. helps for long distances and Surface Normals. 
     # is disabled when Median filter is used at higher values
     stereo.setSubpixel(True)
@@ -44,10 +48,28 @@ def getStereoPair(pipeline, monoLeft, monoRight):
     monoLeft.out.link(stereo.left)
     monoRight.out.link(stereo.right)
 
+    return stereo
+
+# Sets up the Spacial Location Calculator
+def getSpatialCalc(pipeline):
+    # Pipline
     spatialCalc = pipeline.create(dai.node.SpatialLocationCalculator)
     spatialCalc.setWaitForConfigInput(False)
 
-    return stereo
+    # Configure size of window
+    topLeft = dai.Point2f(0.4, 0.4)
+    bottomRight = dai.Point2f(0.6, 0.6)
+    
+    config = dai.SpatialLocationCalculatorConfigData()
+    config.depthThresholds.lowerThreshold = 100
+    config.depthThresholds.upperThreshold = 10000
+    config.roi = dai.Rect(topLeft, bottomRight)
+
+    # adds config to spatialCalc
+    spatialCalc.inputConfig.setWaitForMessage(False)
+    spatialCalc.initialConfig.addROI(config)
+
+    return spatialCalc, config, topLeft, bottomRight
 
 if __name__ == '__main__':
 
@@ -61,6 +83,9 @@ if __name__ == '__main__':
     # Combine left and right cameras
     stereo = getStereoPair(pipeline, monoLeft, monoRight)
 
+    # Set SpatialCalc
+    spatialCalc, config, topLeft, bottomRight = getSpatialCalc(pipeline)
+
     # Set up XLink for Stereo Camera disparity
     xoutDisp = pipeline.createXLinkOut()
     xoutDisp.setStreamName("disparity")
@@ -69,7 +94,17 @@ if __name__ == '__main__':
     xoutDepth = pipeline.createXLinkOut()
     xoutDepth.setStreamName("depth")
 
-    stereo.depth.link(xoutDepth.input)
+    # Set up Xlink for SpatialCalc
+    xoutCalc = pipeline.createXLinkOut()
+    xoutCalc.setStreamName("outSpatialCalc")
+    xinCalc = pipeline.createXLinkIn()
+    xinCalc.setStreamName("inSpatialCalc")
+
+    #Sets up link for depth and spacial config
+    spatialCalc.passthroughDepth.link(xoutDepth.input)
+    stereo.depth.link(spatialCalc.inputDepth)
+    spatialCalc.out.link(xoutCalc.input)
+    xinCalc.out.link(spatialCalc.inputConfig)
     stereo.disparity.link(xoutDisp.input)
 
     # Corrects for unknown distance Static
@@ -81,15 +116,19 @@ if __name__ == '__main__':
         # Get output queues
         disparityQueue = device.getOutputQueue(name = "disparity", maxSize = 2, blocking = False)
         depthQueue = device.getOutputQueue(name = "depth", maxSize = 2, blocking = False)
+        spatialCalcQueue = device.getOutputQueue(name="outSpatialCalc", maxSize=2, blocking=False)
+        spatialCalcConfigInQueue = device.getInputQueue("inSpatialCalc")
 
         # Calculate the colormap
         disparityMultiplier = 255 / stereo.initialConfig.getMaxDisparity()
-        depthMultiplier = 255 / 10000
+
+        color = (255, 255, 255)
+
+        print("Use WASD keys to move ROI!")
 
         while True:
             # Get frames in cv2 format
             disparity = getFrame(disparityQueue)
-            depth = getFrame(depthQueue)
             # Get frames for depth values
             dep = depthQueue.get()
             depthFrame = dep.getFrame()
@@ -97,32 +136,64 @@ if __name__ == '__main__':
             # ColorMap for view
             disparity = (disparity * disparityMultiplier).astype(np.uint8)
             disparity = cv2.applyColorMap(disparity, cv2.COLORMAP_JET)
-            depth = (depth * depthMultiplier).astype(np.uint8)
-            depth = cv2.applyColorMap(depth, cv2.COLORMAP_BONE)
+            depthFrameColor = cv2.normalize(depthFrame, None, 255, 0, cv2.NORM_INF, cv2.CV_8UC1)
+            depthFrameColor = cv2.equalizeHist(depthFrameColor)
+            depthFrameColor = cv2.applyColorMap(depthFrameColor, cv2.COLORMAP_HOT)
 
-            # Finds the size and center of the display
-            height, width = depthFrame.shape
-            centerX, centerY = width // 2, height // 2
+            # Calculates SpcialData
+            spatialData = spatialCalcQueue.get().getSpatialLocations()
+            for depthData in spatialData:
+                roi = depthData.config.roi
+                roi = roi.denormalize(width=depthFrameColor.shape[1], height=depthFrameColor.shape[0])
+                xmin = int(roi.topLeft().x)
+                ymin = int(roi.topLeft().y)
+                xmax = int(roi.bottomRight().x)
+                ymax = int(roi.bottomRight().y)
 
-            # Find the distance at the center. any value works
-            distance = depthFrame[centerX,centerY]
+                depthMin = depthData.depthMin
+                depthMax = depthData.depthMax
 
-            # Sets distance as previous output if 
-            if distance <= 1:
-                distance = preDepth
+                fontType = cv2.FONT_HERSHEY_TRIPLEX
+                cv2.rectangle(depthFrameColor, (xmin, ymin), (xmax, ymax), color, cv2.FONT_HERSHEY_SCRIPT_SIMPLEX)
+                cv2.putText(depthFrameColor, f"X: {int(depthData.spatialCoordinates.x)} mm", (xmin + 10, ymin + 20), fontType, 0.5, 255)
+                cv2.putText(depthFrameColor, f"Y: {int(depthData.spatialCoordinates.y)} mm", (xmin + 10, ymin + 35), fontType, 0.5, 255)
+                cv2.putText(depthFrameColor, f"Z: {int(depthData.spatialCoordinates.z)} mm", (xmin + 10, ymin + 50), fontType, 0.5, 255)
 
-            # Creates a dot and displays the distance
-            cv2.circle(depth, (centerX, centerY), 2, (255, 255, 255), -1)
-            cv2.putText(depth, str(distance) + "mm" , (centerX + 3, centerY), 
-                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255,), 3)
-            
             # Displays Screens
             cv2.imshow("Disparity", disparity)
-            cv2.imshow("Depth", depth)
+            cv2.imshow("Depth", depthFrameColor)
 
-            preDepth = distance
+                #preDepth = distance
             # Ends Stream when q is pressed
             key = cv2.waitKey(1)
             if key == ord('q'):
                 break
+            elif key == ord('w'):
+                if topLeft.y - stepSize >= 0:
+                    topLeft.y -= stepSize
+                    bottomRight.y -= stepSize
+                    newConfig = True
+            elif key == ord('a'):
+                if topLeft.x - stepSize >= 0:
+                    topLeft.x -= stepSize
+                    bottomRight.x -= stepSize
+                    newConfig = True
+            elif key == ord('s'):
+                if bottomRight.y + stepSize <= 1:
+                    topLeft.y += stepSize
+                    bottomRight.y += stepSize
+                    newConfig = True
+            elif key == ord('d'):
+                if bottomRight.x + stepSize <= 1:
+                    topLeft.x += stepSize
+                    bottomRight.x += stepSize
+                    newConfig = True
 
+            # Sets new Config
+            if newConfig:
+                config.roi = dai.Rect(topLeft, bottomRight)
+                config.calculationAlgorithm = dai.SpatialLocationCalculatorAlgorithm.MIN
+                cfg = dai.SpatialLocationCalculatorConfig()
+                cfg.addROI(config)
+                spatialCalcConfigInQueue.send(cfg)
+                newConfig = False
