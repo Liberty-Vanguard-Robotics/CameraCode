@@ -1,6 +1,33 @@
-# Displays the Left and right Camera outputs
-# press q to end the program and t to switch between overlaid and side by side streams
+# import socket
+# import cv2
+# import pickle
+# import struct
 
+# # Open the default camera (index 0)
+# cap = cv2.VideoCapture(0)
+
+# if not cap.isOpened():
+#     print("Error: Cannot access the camera.")
+#     exit()
+
+# while True:
+#     # Capture a frame
+#     ret, frame = cap.read()
+    
+#     if not ret:
+#         print("Error: Cannot read frame from the camera.")
+#         break
+    
+#     # Display the frame
+#     cv2.imshow('Camera', frame)
+    
+#     # Break loop on 'q' key press
+#     if cv2.waitKey(1) & 0xFF == ord('q'):
+#         break
+
+# # Release the camera and close the window
+# cap.release()
+# cv2.destroyAllWindows()
 
 import depthai as dai
 import numpy as np
@@ -9,191 +36,79 @@ import cv2
 import pickle
 import struct
 
+# Function to send frame to server
+def send_frame(frame, client_socket):
+    _, frame_encoded = cv2.imencode('.jpg', frame)  # Compress frame to JPEG
+    data = pickle.dumps(frame_encoded)  # Serialize the compressed frame
 
-# def sendFrame(frame):
-#     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-#     client_socket.connect(('192.168.168.206', 65432))
+    # Send message length first, then data
+    client_socket.sendall(struct.pack("L", len(data)) + data)
 
-#     _, frame_encoded = cv2.imencode('.jpg', frame)
-#     data = pickle.dumps(frame_encoded)
-        
-#     # Send message length first, then data
-#     #Pay attention to this
-#     client_socket.sendall(struct.pack("L", len(data)) + data)
-#     client_socket.close()
-
-def getFrame(queue):
+def get_frame(queue):
     frame = queue.get()
     return frame.getCvFrame()
 
-def getMonoCamera(pipeline, isleft):
-    # Configure Mono Camera
-    mono = pipeline.createMonoCamera()
-    
-    #Set Camera Resolution
-    mono.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
-
-    if isleft:
-        #CAM_B is the left camera
-        mono.setBoardSocket(dai.CameraBoardSocket.CAM_B)
-    else : 
-        #CAM_C is the right camera
-        mono.setBoardSocket(dai.CameraBoardSocket.CAM_C)
-    return mono
-
-def getStereoPair(pipeline, monoLeft, monoRight):
-    stereo = pipeline.createStereoDepth()
-    stereo.setLeftRightCheck(True)
-
-    monoLeft.out.link(stereo.left)
-    monoRight.out.link(stereo.right)
-
-    return stereo
-
-def mouseCallBack(event,x,y,flags,param):
-    global mouseX, mouseY
-    if event == cv2.EVENT_LBUTTONDOWN:
-        mouseX = x
-        mouseY = y
-
 if __name__ == '__main__':
 
-
-    mouseX = 0
-    mouseY = 640
-    # Create pipeline
+    # Create pipeline for DepthAI
     pipeline = dai.Pipeline()
 
     # Set up left and right Cameras
-    monoLeft = getMonoCamera(pipeline, isleft= True)
-    monoRight = getMonoCamera(pipeline, isleft= False)
+    mono_left = pipeline.createMonoCamera()
+    mono_left.setBoardSocket(dai.CameraBoardSocket.CAM_B)
+    mono_left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
 
-    # Combine left and right cameras
-    stereo = getStereoPair(pipeline, monoLeft, monoRight)
+    mono_right = pipeline.createMonoCamera()
+    mono_right.setBoardSocket(dai.CameraBoardSocket.CAM_C)
+    mono_right.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
 
-    # Set up XLink for Stereo Camera
-    xoutDepth = pipeline.createXLinkOut()
-    xoutDepth.setStreamName("depth")
+    stereo = pipeline.createStereoDepth()
+    stereo.setLeftRightCheck(True)
+    mono_left.out.link(stereo.left)
+    mono_right.out.link(stereo.right)
 
-    xoutDisp = pipeline.createXLinkOut()
-    xoutDisp.setStreamName("disparity")
+    # Set up XLink outputs
+    xout_depth = pipeline.createXLinkOut()
+    xout_depth.setStreamName("depth")
+    stereo.disparity.link(xout_depth.input)
 
-    xoutRectLeft = pipeline.createXLinkOut()
-    xoutRectLeft.setStreamName("rectLeft")
+    xout_rect_left = pipeline.createXLinkOut()
+    xout_rect_left.setStreamName("rectLeft")
+    stereo.rectifiedLeft.link(xout_rect_left.input)
 
-    xoutRectRight = pipeline.createXLinkOut()
-    xoutRectRight.setStreamName("rectRight")
+    xout_rect_right = pipeline.createXLinkOut()
+    xout_rect_right.setStreamName("rectRight")
+    stereo.rectifiedRight.link(xout_rect_right.input)
 
-    stereo.disparity.link(xoutDisp.input)
-
-    stereo.rectifiedLeft.link(xoutRectLeft.input)
-    stereo.rectifiedRight.link(xoutRectRight.input)
-
-    # Pipeline is defined
+    # Setup socket to connect to the server
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    client_socket.connect(('192.168.168.206', 65432))  # Use the server's IP address
 
     with dai.Device(pipeline) as device:
-
         # Get output queues
-        disparityQueue = device.getOutputQueue(name = "disparity", maxSize = 1, blocking = False)
-        rectLeftQueue = device.getOutputQueue(name = "rectLeft", maxSize = 1, blocking = False)
-        rectRightQueue = device.getOutputQueue(name = "rectRight", maxSize = 1, blocking = False)
-
-        # Calculate the colormap
-        disparityMultiplier = 255 / stereo.getMaxDisparity()
-
-        # Set display window Name
-        cv2.namedWindow("Stereo Pair")
-        cv2.setMouseCallback("Stereo Pair", mouseCallBack)
-
-        sideBySide = False
-
-        #setting up to send video
-        try:
-            client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            client_socket.connect(('192.168.168.206', 65432))
-        except:
-            print("Couldn't conenct")
+        rect_left_queue = device.getOutputQueue(name="rectLeft", maxSize=1, blocking=False)
+        rect_right_queue = device.getOutputQueue(name="rectRight", maxSize=1, blocking=False)
 
         while True:
-            # Get frames
-            disparity = getFrame(disparityQueue)
-            Var = disparityQueue.get()
-            VarToSend = Var.getFrame()
+            # Get frames from the output queues
+            left_frame = get_frame(rect_left_queue)
+            right_frame = get_frame(rect_right_queue)
 
-            # ColorMap for disparity view
-            disparity = (disparity * disparityMultiplier).astype(np.uint8)
-            disparity = cv2.applyColorMap(disparity, cv2.COLORMAP_JET)
+            # Send left frame (or combine them as necessary) to the server
+            im_out = left_frame
+            im_out = cv2.cvtColor(im_out, cv2.COLOR_GRAY2RGB)
 
-            # Get left and right frames
-            leftFrame = getFrame(rectLeftQueue)
-            rightFrame = getFrame(rectRightQueue)
+            # Send the frame to the server
+            send_frame(im_out, client_socket)
 
-            imOut = leftFrame
-            #Send imOut!
-            imOut = cv2.cvtColor(imOut, cv2.COLOR_GRAY2RGB)
+            # Display the frames locally (optional)
+            cv2.imshow("Stereo Pair", im_out)
 
-            imOut = cv2.line(imOut, (mouseX, mouseY), (1280, mouseY), (0, 0, 255), 2)
-            imOut = cv2.circle(imOut, (mouseX, mouseY), 2, (255, 255, 128), 2)
-
-            #sending video
-        
-            # Compress frame to JPEG format 
-            _, frame_encoded = cv2.imencode('.jpg', imOut)
-        
-            # Serialize the compressed frame
-            data = pickle.dumps(frame_encoded)
-        
-            # Send message length first, then data
-            #Pay attention to this
-            client_socket.sendall(struct.pack("L", len(data)) + data)
-
-            cv2.imshow("Stereo Pair", imOut) #send this one
-            cv2.imshow("Disparity", disparity)
-
-
-
-            # Ends Stream when q is pressed
-            key = cv2.waitKey(1)
-            if key == ord('q'):
+            # Quit when 'q' is pressed
+            if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
-                client_socket.close()
-            elif key == ord('t'):
-                sideBySide = not sideBySide
 
+    # Close the socket and window
+    client_socket.close()
+    cv2.destroyAllWindows()
 
-
-
-# import socket
-# import cv2
-# import pickle
-# import struct
-
-# def send_video():
-#     # Initialize camera
-#     cap = cv2.VideoCapture(0)  # 0 is usually the default camera
-
-#     # Setup client socket
-#     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-#     client_socket.connect(('192.168.168.2', 65432))
-
-#     while cap.isOpened():
-#         # Capture frame-by-frame
-#         ret, frame = cap.read()
-#         if not ret:
-#             break
-        
-#         # Compress frame to JPEG format
-#         _, frame_encoded = cv2.imencode('.jpg', frame)
-        
-#         # Serialize the compressed frame
-#         data = pickle.dumps(frame_encoded)
-        
-#         # Send message length first, then data
-#         client_socket.sendall(struct.pack("L", len(data)) + data)
-    
-#     # Release the camera and close the socket
-#     cap.release()
-#     client_socket.close()
-
-# # Run the client
-# send_video()
