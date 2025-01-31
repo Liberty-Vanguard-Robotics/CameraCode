@@ -60,7 +60,13 @@ import pickle
 import cv2
 import struct
 
-# Server setup to receive video
+# Function to send commands to the client
+def send_command(command, client_socket):
+    data = pickle.dumps(command)
+    # Send the command with its length
+    client_socket.sendall(struct.pack("L", len(data)) + data)
+
+# Server setup to receive video and send commands
 server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 server_socket.bind(('0.0.0.0', 65432))  # Bind to all interfaces (0.0.0.0) and port 65432
 server_socket.listen(1)  # Wait for incoming connections
@@ -69,26 +75,33 @@ print("Server is waiting for connection...")
 client_socket, addr = server_socket.accept()  # Accept the connection
 print(f"Connection from {addr} established!")
 
-# Receiving video
+# Receiving video and sending commands
 while True:
-    # First, receive the message length
+    # Receive the frame data
     data = b""
     while len(data) < struct.calcsize("L"):
         data += client_socket.recv(4096)
     msg_size = struct.unpack("L", data)[0]
 
-    # Receive the actual frame data
     data = b""
     while len(data) < msg_size:
         data += client_socket.recv(4096)
 
-    # Deserialize the frame data
     frame_data = pickle.loads(data)
     frame = cv2.imdecode(frame_data, cv2.IMREAD_COLOR)  # Decode the JPEG frame
 
     # Display the frame
     if frame is not None:
         cv2.imshow("Received Video", frame)
+
+    # Check if there is a command to send back
+    if cv2.waitKey(1) & 0xFF == ord('p'):  # Send pause command if 'p' is pressed
+        send_command('pause', client_socket)
+        print("Sent pause command to client")
+
+    if cv2.waitKey(1) & 0xFF == ord('r'):  # Send resume command if 'r' is pressed
+        send_command('resume', client_socket)
+        print("Sent resume command to client")
 
     # Quit when 'q' is pressed
     if cv2.waitKey(1) & 0xFF == ord('q'):
