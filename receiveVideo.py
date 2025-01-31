@@ -55,6 +55,7 @@
 
 
 
+
 import socket
 import pickle
 import cv2
@@ -78,10 +79,26 @@ print(f"Connection from {addr} established!")
 # Receiving video and sending commands
 while True:
     # Receive the frame data
-    data = b""
-    while len(data) < struct.calcsize("L"):
-        data += client_socket.recv(4096)
-    msg_size = struct.unpack("L", data)[0]
+    
+
+
+    def recv_all(sock, size):
+        data = b""
+        while len(data) < size:
+            packet = sock.recv(size - len(data))
+            if not packet:
+                return None  # Handle disconnection properly
+            data += packet
+        return data
+
+# Ensure exactly 8 bytes are received before unpacking
+    data = recv_all(client_socket, struct.calcsize("!Q"))  
+    if data is None:
+        print("Client disconnected")
+        break
+
+    msg_size = struct.unpack("!Q", data)[0]
+
 
     data = b""
     while len(data) < msg_size:
