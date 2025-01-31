@@ -36,13 +36,30 @@ import cv2
 import pickle
 import struct
 
-# Function to send frame to server
+# Function to send frame to the server
 def send_frame(frame, client_socket):
     _, frame_encoded = cv2.imencode('.jpg', frame)  # Compress frame to JPEG
     data = pickle.dumps(frame_encoded)  # Serialize the compressed frame
 
     # Send message length first, then data
-    client_socket.sendall(struct.pack("L", len(data)) + data)
+    client_socket.sendall(struct.pack("!Q", len(data)) + data)
+
+# Function to receive command from the server
+def receive_command(client_socket):
+    # First, receive the message length
+    data = b""
+    while len(data) < struct.calcsize("L"):
+        data += client_socket.recv(4096)
+    msg_size = struct.unpack("L", data)[0]
+
+    # Receive the actual command data
+    data = b""
+    while len(data) < msg_size:
+        data += client_socket.recv(4096)
+
+    # Deserialize the command data
+    command = pickle.loads(data)
+    return command
 
 def get_frame(queue):
     frame = queue.get()
@@ -82,7 +99,7 @@ if __name__ == '__main__':
 
     # Setup socket to connect to the server
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    client_socket.connect(('192.168.168.206', 65432))  # Use the server's IP address
+    client_socket.connect(('192.168.1.207', 65432))  # Use the server's IP address
 
     with dai.Device(pipeline) as device:
         # Get output queues
@@ -100,6 +117,14 @@ if __name__ == '__main__':
 
             # Send the frame to the server
             send_frame(im_out, client_socket)
+
+            # Check for commands from the server
+            command = receive_command(client_socket)
+            if command == 'pause':
+                print("Received pause command from server")
+                cv2.waitKey(0)  # Pause until a key is pressed
+            elif command == 'resume':
+                print("Received resume command from server")
 
             # Display the frames locally (optional)
             cv2.imshow("Stereo Pair", im_out)
