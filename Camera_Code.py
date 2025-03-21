@@ -2,7 +2,7 @@
 import cv2
 
 # Captures Video change the # to the device id
-stream = cv2.VideoCapture(0)
+stream = cv2.VideoCapture(1)
 
 # Check for stream
 if not stream.isOpened():
