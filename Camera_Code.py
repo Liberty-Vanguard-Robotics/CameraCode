@@ -2,7 +2,7 @@
 import cv2
 
 # Captures Video change the # to the device id
-stream = cv2.VideoCapture(0)
+stream = cv2.VideoCapture(1)
 output_width, output_height = 640, 480
 
 # Check for stream
