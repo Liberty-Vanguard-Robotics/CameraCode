@@ -25,12 +25,15 @@ while True:
     data = b""
     while len(data) < size:
         data += conn.recv(size - len(data))
-    
+    try:
     # Deserialize the data (it was serialized using pickle)
-    frame = pickle.loads(data)
+        frame = pickle.loads(data)
 
     # If frame was JPEG compressed, we need to decode it
-    frame = cv2.imdecode(frame, cv2.IMREAD_GRAYSCALE)  # Assuming grayscale frames
+        frame = cv2.imdecode(frame, cv2.IMREAD_GRAYSCALE)  # Assuming grayscale frames
+    except Exception as e:
+        print(f"Frame decode error: {e}")
+        continue
     
     if frame is None:
         print("Failed to decode frame.")

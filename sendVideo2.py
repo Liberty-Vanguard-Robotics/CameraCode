@@ -11,7 +11,7 @@ client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 client_socket.connect((server_ip, server_port))
 
 # Capture video
-stream = cv2.VideoCapture(1)
+stream = cv2.VideoCapture(0)
 
 if not stream.isOpened():
     print("No Stream")
